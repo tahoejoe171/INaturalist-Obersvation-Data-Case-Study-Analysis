@@ -1,0 +1,188 @@
+#Takes only the desired datapoints from each observation uploaded to INaturalist
+def Get_Info(observation):
+    extensions = ['.jpg','.jpeg','.png','.webp','.gif']
+    result=[] 
+    if(observation['captive']==True): #only returns wild specimen observations
+        return
+    try:
+        result.append(observation['taxon']['name']) #Most specific taxon name given. Observation is voided altogether if there is no name.
+    except(KeyError, TypeError):
+        return None
+    try:
+        result.append(observation['id']) #Observation ID number
+    except (KeyError, TypeError):
+        result.append('None')
+    try:
+        result.append(observation['location']) #Location
+    except (KeyError, TypeError):
+        result.append('None')
+    try:
+        result.append(observation['positional_accuracy']) #Accuracy, in meters, of the location
+    except (KeyError, TypeError):
+        result.append('None')
+    try:
+        result.append(observation['observed_on']) #date of observation
+    except (KeyError, TypeError):
+        result.append('None')
+    try:
+        result.append(observation['species_guess']) 
+    except (KeyError, TypeError):
+        result.append('None')
+    try:
+        result.append(observation['taxon']['rank']) #rank of the taxon (family, genus, order, etc.)
+    except (KeyError, TypeError):
+        result.append('None')
+    try:
+        result.append(observation['taxon']['preferred_common_name']) #preferred common name of the specimen. May be 
+                                                                     #in a native language or different than the common name
+    except (KeyError, TypeError):
+        result.append('None')
+    try: #Retrieve the original photo url, accounting for both jpg and jpeg files. If not found, this observation is voided altogether
+        photo_url=observation['observation_photos'][0]['photo']['url']
+        matched = False
+        for ext in extensions:
+            if photo_url.lower().endswith(ext):
+                result.append(photo_url[:-(len(ext)+6)]+'original'+ ext)
+                matched = True
+                break
+        if not matched:
+            return None
+    except (KeyError, TypeError, IndexError):
+        return None
+    try: #Creative commons phoho copyright attribution
+        result.append((observation['observation_photos'][0]['photo']['attribution'])) #Copyright attribution for fair use of the original photo
+    except (KeyError, TypeError, IndexError):
+        result.append('None')
+    try:
+        result.append(observation['taxon']['conservation_status']['status_name']) #conservation status. ex:threatened, vulnerable, etc.
+    except (KeyError, TypeError):
+        result.append('None')
+    try: #Native, Introduced, or Endemic
+        result.append(observation['taxon']['establishment_means']['establishment_means']) #Known Establishment means. ex: native, endemic, introduced, none, etc. 
+    except (KeyError, TypeError):
+        result.append('None')
+    try:
+        result.append(observation['obscured']) #exact loation may be obscured by several hundred or thousand meters,
+                                               #due to user privacy or taxon privacy(in the case of rare or endangered species)
+    except (KeyError, TypeError):
+        result.append('None')
+    try:
+        result.append(observation['taxon']['extinct']) #Extinct or not (Boolean)
+    except (KeyError, TypeError):
+        result.append('None') 
+    return result   
+
+data_columns = ['taxon_name','id','location','positional_accuracy','observed_on','species_guess','taxon_rank','preferred_common_name',
+                'photo_url','copyright','conservation_status','establishment_means','location_obscured','rank_extinct'] #csv column names
+
+
+
+def Merge_Files(file_1_name, file_2_name):
+    file_1=file_1_name
+    file_2=file_2_name
+    alpha = pd.read_csv(f"{Your_File_Path}{file_1}")
+    beta=pd.read_csv(f"{Your_File_Path}\\{file_2}")
+    pd.concat([alpha,beta], ignore_index=False, axis=0, sort=False).drop_duplicates().to_csv("All_Data.csv",index=False)
+
+
+def Get_Total_Results(): #returns the total results from the_parameters in the average search window
+    check_response = requests.get(url, params=the_parameters, headers=request_headers)
+    if check_response.status_code == 200: #response from API recieved
+        test_data = check_response.json()
+        with open("testdata.json", "w") as json_file:
+            json.dump(test_data, json_file, indent=4)
+        return (test_data["total_results"])
+
+#retrieve the ID of the most recent observation (according to the date parameters) uploaded to INaturalist
+def Get_Latest_ID():
+    parameters = {
+    "per_page":1,
+    #"created_before":"YYYY-MM-DD"
+    }
+    check_response = requests.get(url, params=parameters, headers=request_headers)
+    if check_response.status_code == 200: #response from API recieved
+        test_data = check_response.json()
+        return int(test_data["results"][0]['id'])
+    
+#Retrieve the proper location ID 
+def Get_Place_ID(place):
+    places_url = "https://api.inaturalist.org/v1/places/autocomplete"
+    params = {"q": f"{place}"}
+    response = requests.get(places_url, params=params)
+    if response.status_code == 200:
+        data = response.json()
+        for place in data["results"]:
+            print(f"Place Name: {place['display_name']} - Place ID: {place['id']}")
+    else:
+        print(f"Error: {response.status_code}")
+
+#returns amount of hours until n hours from the start time, along with a boolean representing whether or not the current time has reached that time.
+def CompareTime(start_time, n):
+    hrs_ago=datetime.now()-timedelta(hours=n) 
+    diff=(start_time-hrs_ago)
+    if diff.seconds/3600<=1:
+        return [False,abs(diff.seconds)] #returns the time until the next hour interval
+    else:
+        print(f'it has been {min(abs(diff.seconds/3600), abs(24-diff.seconds/3600))} hours since {n} hours from the start time, 
+              and 5GB has not been reached. Resetting hourly data consumption meter.')
+        return [True]
+    
+#Retrieves the raw data from the API and saves it to a .csv
+def Get_Data():
+    init_num=initial_window_number
+    download_size = 0 #ID window current download size
+    total_download_size = 0 #total daily download size
+    hrs=1 #Hours (1-6) counter
+    days=0 #days counter
+    all_data=pd.DataFrame(columns=data_columns)
+    start_time=datetime.now()
+    try:
+        while True:
+            while initial_window_number<number_of_windows: #cycle through each window of ID's 
+                page=1
+                page_limit=1
+                while (page<=(page_limit)): #cycle through each page of that window
+                    the_parameters["page"]=page
+                    response = requests.get(url, params=the_parameters, headers=request_headers)
+                    if response.status_code == 200: #response from API recieved
+                        data = response.json()
+                        with open("data.json", "w") as json_file:
+                            json.dump(data, json_file, indent=4)
+                        page_limit = (math.ceil(data['total_results']/per_page)) #Max amount of pages in that window
+                        for observation in data['results']:
+                            if not (x:= Get_Info(observation)) == None: #voids the observations that are missing important data points, which return None in getInfo()
+                                if (len(x) == len(data_columns)): #in case any columns are mismatched somehow
+                                    all_data.loc[len(all_data)]=x
+                    else: #response from API not received
+                        print(f"Error: {response.status_code}",'\n', response.text)
+                        all_data.to_csv(f'all_data(failed){init_num}-{initial_window_number-1}outof{number_of_windows}.csv', index_label="index") 
+                        raise SystemExit("Stopping execution")
+
+                    download_size+= (s:=os.path.getsize(f"{Your_File_Path}data.json")/1024/1024/1024) #count each page request size in GB
+                    total_download_size +=s
+                    print(f"\rDownloaded data this hour: {download_size:.2f} GB. ", end="") #download size live update
+                    page+=1
+                    if(download_size)>4.85: #if more than 4.9 gigs of data have been downloaded and an hour hasnt passed, pause until the next hour begins. 
+                        all_data.to_csv(f'alldata_windows_hr{hrs}_{init_num}_{initial_window_number-1}out_of{number_of_windows}.csv', index_label="index") #save once per hour block.
+                        if CompareTime(start_time,hrs)[0]==False:
+                            download_size = 0
+                            print(f'{CompareTime(start_time,hrs)[1]//60} minutes until the next 5GB cycle.')
+                            time.sleep(CompareTime(start_time,hrs)[1]) #wait until the next hour interval, then continue
+                            hrs+=1
+                    if ((datetime.now()-start_time).seconds/3600)>=(hrs+1): #resetting the data counter and the time clock if an hour passes before 5gb is downloaded
+                            hrs+=1
+                            download_size = 0 
+                    if((total_download_size-days*23.85)>=23.85): #daily download threshold is reached.
+                        print(f"Max Daily Data reached. Window {initial_window_number} incomplete. Continuing in 19 hours.")
+                        download_size=0
+                        time.sleep(68400)
+                    time.sleep(1) #Maximum allowed request rate is 1 per second
+                print(f'\rWindow {initial_window_number} Complete: {(initial_window_number+1)/number_of_windows:.2%}')
+                initial_window_number+=1 #Increment to the next "window" of ID's 
+                the_parameters["id_below"]=max(1257723,260757723-(initial_window_number)*1300000)
+                the_parameters["id_above"] = max(0, 260757723 - ((initial_window_number + 1) * 1300000))
+            all_data.to_csv(f'all_data_windows{init_num}-{initial_window_number-1}/{number_of_windows}.csv', index_label="index") #save final csv file once the end is reached.
+            raise SystemExit("Data Collection Complete.")
+    except (KeyboardInterrupt, BaseException): #saves progress in case of an error of any kind
+        all_data.to_csv(f"all_data_windows(failed){init_num}-{max(init_num,initial_window_number-1)}outof{number_of_windows}.csv", index_label="index")
+        print('Error. Processed data has been saved.')
